@@ -37,21 +37,25 @@ Vous pouvez installer **Hygie** directement depuis GitHub à l'aide du paquet `r
 if (!requireNamespace("remotes", quietly = TRUE)) {
   install.packages("remotes")
 }
-
+```
 # 2. Installer Hygie et l'ensemble de ses dépendances
+```R
 remotes::install_github("census-specs/hygie")
+```
 🎯 Prise en main rapide
 Une fois le paquet installé, vous pouvez lancer l'application d'une simple commande dans votre console R :
 
-R
+```R
 library(hygie)
 
 # Lancer Hygie
 run_hygie()
+```
 Options de lancement :
-R
+```R
 # Lancer sur un port spécifique sans ouvrir le navigateur externe (affichage Viewer RStudio)
 run_hygie(port = 3838, launch.browser = rstudioapi::viewer)
+```
 🛠️ Stack technique & Dépendances
 L'application repose sur l'écosystème R moderne et performant :
 
@@ -62,7 +66,7 @@ Manipulation de données : dplyr, tidyr, stringr, forcats, purrr, rlang
 Import / Export : readr, readxl, haven, writexl, jsonlite
 
 Gestion du temps : lubridate
-```
+
 👨‍💻 Auteur & Contact
 Pierre Valdeze MBOM MBOM
 
