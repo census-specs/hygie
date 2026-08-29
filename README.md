@@ -62,13 +62,15 @@ Manipulation de données : dplyr, tidyr, stringr, forcats, purrr, rlang
 Import / Export : readr, readxl, haven, writexl, jsonlite
 
 Gestion du temps : lubridate
-
+```
 👨‍💻 Auteur & Contact
 Pierre Valdeze MBOM MBOM
 
 Email : pierrembom@outlook.com
 
 GitHub : @census-specs
+
+Téléphone : +237 698389030 / 650989019
 
 📄 Licence
 Ce projet est sous licence MIT. Consulter le fichier LICENSE pour plus de détails.
