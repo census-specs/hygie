@@ -304,6 +304,57 @@ hygie_donnees_inspection <- reactive({
   hygie_filtrer_problemes(df, rv$hygie_probleme_actif)
 })
 
+# Barre d'inspection : état visible au-dessus du tableau, sans toucher au pipeline.
+output$hygie_filtre_barre <- renderUI({
+  filtre <- rv$hygie_probleme_actif
+  if (is.null(filtre)) return(NULL)
+
+  df_base <- hygie_donnees_inspection_base()
+  df_filtre <- hygie_donnees_inspection()
+  if (is.null(df_base) || is.null(df_filtre)) return(NULL)
+
+  libelle_type <- switch(
+    filtre$type,
+    missing="valeurs manquantes",
+    outlier="valeurs aberrantes",
+    duplicate="doublons",
+    "problèmes"
+  )
+  variable <- filtre$variable
+  libelle <- if (is.null(variable) || !nzchar(variable)) libelle_type else
+    paste(libelle_type, "dans", variable)
+
+  tags$div(
+    class="h-inspection-bar",
+    tags$div(
+      class="h-inspection-main",
+      tags$span(class="h-inspection-icon", "Inspection"),
+      tags$span(class="h-inspection-label", libelle),
+      tags$span(class="h-inspection-count", paste0(nrow(df_filtre), " ligne(s)"))
+    ),
+    tags$button(
+      type="button",
+      class="h-inspection-clear",
+      onclick="Shiny.setInputValue('hygie_effacer_probleme', Math.random(), {priority:'event'});",
+      "Réinitialiser l'inspection"
+    )
+  )
+})
+
+observeEvent(input$hygie_effacer_probleme, {
+  rv$hygie_probleme_actif <- NULL
+}, ignoreInit=TRUE)
+
+# Insérer la barre une seule fois juste avant le tableau existant.
+session$onFlushed(function() {
+  insertUI(
+    selector="#tableau_donnees",
+    where="beforeBegin",
+    ui=uiOutput("hygie_filtre_barre"),
+    immediate=TRUE
+  )
+}, once=TRUE)
+
 observeEvent(input$apercu_etape_id, {
   rv$hygie_probleme_actif <- NULL
 }, ignoreInit=TRUE)
@@ -385,7 +436,6 @@ output$hygie_boxplot_plot <- renderPlot({
   idx_out <- idx[x[idx] < borne_basse | x[idx] > borne_haute]
   n_out <- length(idx_out)
 
-  # Etendue réelle des données, avec une marge calculée dynamiquement.
   etendue <- range(vals,finite=TRUE)
   marge <- max(diff(etendue)*0.08, abs(med)*0.01, 1e-8)
   xlim <- c(etendue[1]-marge,etendue[2]+marge)
@@ -414,8 +464,6 @@ output$hygie_boxplot_plot <- renderPlot({
   axis(1,at=pretty(xlim),labels=format(pretty(xlim),trim=TRUE,scientific=FALSE))
   abline(v=c(borne_basse,borne_haute),lty=3,col="#B42318")
 
-  # Toutes les observations sont discrètement visibles ; les outliers sont
-  # nettement distingués et étiquetés avec leur ligne.
   set.seed(42)
   y_all <- 1 + runif(length(vals),-0.055,0.055)
   points(vals,y_all,pch=16,cex=0.55,col="#98A2B3")
@@ -447,8 +495,6 @@ output$hygie_boxplot_plot <- renderPlot({
   )
 })
 
-# Le tableau existant est remplacé après le premier flush pour éviter de
-# lire donnees_affichees() avant sa définition dans server.R.
 session$onFlushed(function() {
   output$tableau_donnees <- renderReactable({
     df_base <- hygie_donnees_inspection_base()
@@ -493,3 +539,10 @@ session$onFlushed(function() {
 observeEvent(input$qc_analyser, {
   modal_qc_analyser()
 }, ignoreInit=TRUE)
+
+# Styles locaux du bandeau d'inspection.
+insertUI(
+  selector="head",
+  where="beforeEnd",
+  ui=tags$style(HTML("\n    .h-inspection-bar {\n      display:flex; align-items:center; justify-content:space-between; gap:12px;\n      margin:0 0 8px 0; padding:7px 10px;\n      background:#F8FAFC; border:1px solid #D9E2EC; border-left:3px solid #1A56C4;\n      border-radius:3px; font-family:'Noto Sans',sans-serif;\n    }\n    .h-inspection-main { display:flex; align-items:center; gap:8px; min-width:0; }\n    .h-inspection-icon { font-size:10px; font-weight:700; letter-spacing:.04em; text-transform:uppercase; color:#1A56C4; }\n    .h-inspection-label { font-size:12px; font-weight:600; color:#1A1F2E; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }\n    .h-inspection-count { font-size:10.5px; color:#667085; background:#fff; border:1px solid #D0D5DD; border-radius:9px; padding:2px 7px; white-space:nowrap; }\n    .h-inspection-clear { border:0; background:transparent; color:#667085; font-size:10.5px; cursor:pointer; padding:3px 5px; white-space:nowrap; }\n    .h-inspection-clear:hover { color:#1A56C4; text-decoration:underline; }\n    .h-qualite-header { display:flex; flex-direction:column; gap:4px; min-width:110px; }\n    .h-qualite-header-name { font-weight:600; line-height:1.2; }\n    .h-qualite-header-badges { display:flex; flex-wrap:wrap; gap:3px; }\n    .h-qualite-badge { transition:filter .12s ease, transform .12s ease; }\n    .h-qualite-badge:hover { filter:brightness(.96); transform:translateY(-1px); }\n    .h-qualite-badge:focus-visible { outline:2px solid #1A56C4; outline-offset:1px; }\n  "))
+)
