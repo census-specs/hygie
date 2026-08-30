@@ -1,8 +1,8 @@
 # ============================================================
 # RENDU DU BOXPLOT QUALITE — ggplot2
 # ============================================================
-# Renderer dédié au panneau d'inspection des valeurs aberrantes.
-# Le graphique est construit à partir des données réelles de la variable.
+# Graphique dédié à l'inspection d'une variable numérique.
+# Le boxplot et les observations sont calculés à partir des données réelles.
 # ============================================================
 
 output$hygie_boxplot_plot <- renderPlot({
@@ -14,72 +14,87 @@ output$hygie_boxplot_plot <- renderPlot({
   df <- hygie_donnees_inspection_base()
   req(is.data.frame(df), variable %in% names(df))
 
-  x <- suppressWarnings(as.numeric(df[[variable]]))
-  idx <- which(is.finite(x))
-  vals <- x[idx]
+  original <- df[[variable]]
+  req(is.numeric(original))
+
+  idx <- which(is.finite(original))
+  vals <- original[idx]
   req(length(vals) >= 5)
 
-  q <- stats::quantile(vals, probs = c(.25, .50, .75), names = FALSE, na.rm = TRUE, type = 7)
+  q <- stats::quantile(
+    vals,
+    probs = c(.25, .50, .75),
+    names = FALSE,
+    na.rm = TRUE,
+    type = 7
+  )
+
   q1 <- unname(q[1])
   med <- unname(q[2])
   q3 <- unname(q[3])
   iqr <- q3 - q1
-  req(is.finite(iqr), iqr > 0)
-
   limite_basse <- q1 - 1.5 * iqr
   limite_haute <- q3 + 1.5 * iqr
+
   out_mask <- vals < limite_basse | vals > limite_haute
 
   plot_df <- data.frame(
     valeur = vals,
     ligne = idx,
     est_outlier = out_mask,
+    groupe = "Distribution",
     stringsAsFactors = FALSE
   )
+
   out_df <- plot_df[plot_df$est_outlier, , drop = FALSE]
+  normal_df <- plot_df[!plot_df$est_outlier, , drop = FALSE]
 
-  set.seed(42)
-  plot_df$y <- runif(nrow(plot_df), 0.91, 1.09)
-  out_df$y <- plot_df$y[plot_df$est_outlier]
+  # Pour les annotations, un léger décalage vertical évite que plusieurs
+  # étiquettes exactement alignées deviennent illisibles.
+  if (nrow(out_df) > 0) {
+    out_df$y_label <- seq(-0.10, 0.10, length.out = nrow(out_df))
+  }
 
-  p <- ggplot2::ggplot(plot_df, ggplot2::aes(x = valeur, y = 1)) +
+  n_out <- nrow(out_df)
+  n_missing <- sum(is.na(original))
+
+  fmt <- function(x) {
+    format(x, digits = 6, trim = TRUE, scientific = FALSE)
+  }
+
+  # Le graphique montre d'abord la distribution réelle et utilise le boxplot
+  # ggplot2 comme référence statistique. Les outliers sont redessinés au-dessus
+  # afin d'être toujours visibles et identifiables.
+  p <- ggplot2::ggplot(plot_df, ggplot2::aes(x = valeur, y = groupe)) +
     ggplot2::geom_boxplot(
       orientation = "y",
       outlier.shape = NA,
-      width = 0.38,
-      fill = "#EEF2F6",
-      colour = "#475467",
-      linewidth = 0.7,
-      fatten = 1.5
+      width = 0.34,
+      fill = "#F8FAFC",
+      colour = "#344054",
+      linewidth = 0.8,
+      fatten = 2
     ) +
     ggplot2::geom_point(
-      data = plot_df[!plot_df$est_outlier, , drop = FALSE],
-      ggplot2::aes(x = valeur, y = y),
+      data = normal_df,
+      ggplot2::aes(x = valeur, y = groupe),
       inherit.aes = FALSE,
+      position = ggplot2::position_jitter(height = 0.055, seed = 42),
       shape = 16,
-      size = 1.8,
-      alpha = 0.48,
+      size = 1.7,
+      alpha = 0.42,
       colour = "#667085"
     ) +
     ggplot2::geom_point(
       data = out_df,
-      ggplot2::aes(x = valeur, y = y),
+      ggplot2::aes(x = valeur, y = groupe),
       inherit.aes = FALSE,
+      position = ggplot2::position_jitter(height = 0.055, seed = 42),
       shape = 21,
-      size = 3.3,
-      stroke = 0.7,
+      size = 3.4,
+      stroke = 0.8,
       fill = "#D92D20",
       colour = "#991B1B"
-    ) +
-    ggplot2::geom_text(
-      data = out_df,
-      ggplot2::aes(x = valeur, y = y, label = paste0("L", ligne)),
-      inherit.aes = FALSE,
-      nudge_y = 0.12,
-      size = 3.0,
-      fontface = "bold",
-      colour = "#991B1B",
-      check_overlap = FALSE
     ) +
     ggplot2::geom_vline(
       xintercept = c(limite_basse, limite_haute),
@@ -87,30 +102,24 @@ output$hygie_boxplot_plot <- renderPlot({
       linewidth = 0.45,
       colour = "#B42318"
     ) +
-    ggplot2::scale_y_continuous(
-      limits = c(0.62, 1.38),
-      breaks = 1,
-      labels = NULL,
-      expand = c(0, 0)
-    ) +
     ggplot2::scale_x_continuous(
-      expand = ggplot2::expansion(mult = 0.06)
+      expand = ggplot2::expansion(mult = c(0.06, 0.10))
     ) +
+    ggplot2::scale_y_discrete(drop = FALSE) +
     ggplot2::labs(
       title = paste0("Distribution de « ", variable, " »"),
       subtitle = paste0(
         "n = ", length(vals),
-        "  •  Q1 = ", format(q1, digits = 6, trim = TRUE),
-        "  •  Médiane = ", format(med, digits = 6, trim = TRUE),
-        "  •  Q3 = ", format(q3, digits = 6, trim = TRUE),
-        "  •  ", length(out_df), " valeur(s) aberrante(s)"
+        "  ·  ", n_out, " valeur(s) aberrante(s)",
+        if (n_missing > 0) paste0("  ·  ", n_missing, " manquante(s)") else ""
       ),
       x = "Valeur",
       y = NULL,
-      caption = if (nrow(out_df) > 0)
-        "Rouge = observation au-delà de 1,5 × IQR • Lxx = numéro de ligne"
-      else
-        "Aucune observation au-delà de 1,5 × IQR"
+      caption = paste0(
+        "Moustaches = règle 1,5 × IQR   ·   Q1 = ", fmt(q1),
+        "   ·   Médiane = ", fmt(med),
+        "   ·   Q3 = ", fmt(q3)
+      )
     ) +
     ggplot2::theme_minimal(base_size = 11) +
     ggplot2::theme(
@@ -123,7 +132,7 @@ output$hygie_boxplot_plot <- renderPlot({
       plot.caption = ggplot2::element_text(size = 8.5, colour = "#667085", hjust = 0),
       axis.title.x = ggplot2::element_text(size = 9.5, colour = "#475467"),
       panel.border = ggplot2::element_rect(colour = "#E5E7EB", fill = NA, linewidth = 0.5),
-      plot.margin = ggplot2::margin(10, 18, 10, 18)
+      plot.margin = ggplot2::margin(14, 22, 12, 22)
     )
 
   p
