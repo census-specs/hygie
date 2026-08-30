@@ -186,6 +186,346 @@ analyser_qualite <- function(df) {
   resultats
 }
 
+# ============================================================
+# INSPECTION INTERACTIVE DES PROBLEMES PAR VARIABLE
+# ============================================================
+
+# Cette couche est indépendante du pipeline : les filtres servent
+# uniquement à inspecter les lignes et ne créent aucune transformation.
+
+hygie_analyser_problemes <- function(df) {
+  if (is.null(df) || !is.data.frame(df) || nrow(df) == 0) {
+    return(list())
+  }
+
+  lignes_doublons <- which(
+    duplicated(df) | duplicated(df, fromLast = TRUE)
+  )
+
+  out <- setNames(vector("list", ncol(df)), names(df))
+
+  for (nm in names(df)) {
+    x <- df[[nm]]
+    lignes_manquantes <- which(is.na(x))
+    lignes_outliers <- integer(0)
+
+    if (is.numeric(x)) {
+      idx <- which(!is.na(x))
+      vals <- x[idx]
+
+      # Même règle que les moustaches du boxplot.
+      if (length(vals) >= 5) {
+        q1 <- as.numeric(quantile(vals, .25, names = FALSE, na.rm = TRUE))
+        q3 <- as.numeric(quantile(vals, .75, names = FALSE, na.rm = TRUE))
+        iqr <- q3 - q1
+
+        if (is.finite(iqr) && iqr > 0) {
+          bas <- q1 - 1.5 * iqr
+          haut <- q3 + 1.5 * iqr
+          lignes_outliers <- idx[vals < bas | vals > haut]
+        }
+      }
+    }
+
+    out[[nm]] <- list(
+      manquants = lignes_manquantes,
+      outliers = lignes_outliers,
+      doublons = lignes_doublons
+    )
+  }
+
+  attr(out, "lignes_doublons") <- lignes_doublons
+  out
+}
+
+hygie_filtrer_problemes <- function(df, filtre) {
+  if (is.null(df) || is.null(filtre)) return(df)
+
+  problemes <- hygie_analyser_problemes(df)
+  if (length(problemes) == 0) {
+    return(df[FALSE, , drop = FALSE])
+  }
+
+  type <- filtre$type %||% NULL
+  variable <- filtre$variable %||% NULL
+
+  if (type == "duplicate" && is.null(variable)) {
+    idx <- attr(problemes, "lignes_doublons")
+  } else if (!is.null(variable) && variable %in% names(problemes)) {
+    cle <- switch(
+      type,
+      missing = "manquants",
+      outlier = "outliers",
+      duplicate = "doublons",
+      NULL
+    )
+    idx <- if (is.null(cle)) integer(0) else problemes[[variable]][[cle]]
+  } else {
+    idx <- integer(0)
+  }
+
+  idx <- sort(unique(as.integer(idx)))
+  if (length(idx) == 0) {
+    return(df[FALSE, , drop = FALSE])
+  }
+
+  df[idx, , drop = FALSE]
+}
+
+hygie_json <- function(x) {
+  jsonlite::toJSON(x, auto_unbox = TRUE, null = "null", ensure_ascii = FALSE)
+}
+
+hygie_badge <- function(type, n, variable, action = "filter") {
+  if (length(n) != 1 || is.na(n) || n <= 0) return(NULL)
+
+  libelle <- switch(
+    type,
+    missing = "manquants",
+    outlier = "aberrantes",
+    duplicate = "doublons",
+    type
+  )
+
+  couleur <- switch(
+    type,
+    missing = list(fond = "#FFF7ED", texte = "#9A3412", bord = "#FDBA74"),
+    outlier = list(fond = "#FEF2F2", texte = "#B91C1C", bord = "#FCA5A5"),
+    duplicate = list(fond = "#F5F3FF", texte = "#6D28D9", bord = "#C4B5FD"),
+    list(fond = "#F3F4F6", texte = "#374151", bord = "#D1D5DB")
+  )
+
+  variable_js <- hygie_json(variable)
+
+  if (identical(action, "boxplot")) {
+    onclick <- sprintf(
+      "Shiny.setInputValue('hygie_boxplot', {variable:%s}, {priority:'event'});",
+      variable_js
+    )
+    title <- "Afficher le boxplot et les valeurs aberrantes"
+  } else {
+    type_js <- hygie_json(type)
+    onclick <- sprintf(
+      "Shiny.setInputValue('hygie_probleme', {type:%s, variable:%s}, {priority:'event'});",
+      type_js,
+      variable_js
+    )
+    title <- "Afficher uniquement les lignes concernées"
+  }
+
+  tags$button(
+    type = "button",
+    class = paste("h-qualite-badge", paste0("h-qualite-", type)),
+    title = title,
+    onclick = onclick,
+    style = paste0(
+      "background:", couleur$fond, ";",
+      "color:", couleur$texte, ";",
+      "border:1px solid ", couleur$bord, ";",
+      "font-size:10px;font-weight:600;line-height:1.2;",
+      "padding:2px 6px;border-radius:10px;cursor:pointer;",
+      "white-space:nowrap;"
+    ),
+    paste0(n, " ", libelle)
+  )
+}
+
+hygie_header <- function(value, name, problemes) {
+  p <- problemes[[name]]
+  if (is.null(p)) return(value)
+
+  tags$div(
+    class = "h-qualite-header",
+    tags$span(class = "h-qualite-header-name", value),
+    tags$span(
+      class = "h-qualite-header-badges",
+      hygie_badge("missing", length(p$manquants), name),
+      hygie_badge("outlier", length(p$outliers), name, action = "boxplot"),
+      hygie_badge("duplicate", length(p$doublons), name)
+    )
+  )
+}
+
+# Etat de l'inspection. Ne jamais utiliser names(rv) ici :
+# names.reactivevalues exige un contexte réactif actif.
+rv$hygie_probleme_actif <- NULL
+rv$hygie_boxplot_variable <- NULL
+
+hygie_donnees_inspection_base <- reactive({
+  id <- input$apercu_etape_id
+
+  if (is.null(id) || identical(id, "final")) {
+    rv$donnees_courantes
+  } else {
+    tryCatch(
+      apercu_etape(rv$pipeline, id),
+      error = function(e) NULL
+    )
+  }
+})
+
+hygie_donnees_inspection <- reactive({
+  df <- hygie_donnees_inspection_base()
+  req(!is.null(df))
+  hygie_filtrer_problemes(df, rv$hygie_probleme_actif)
+})
+
+observeEvent(input$apercu_etape_id, {
+  rv$hygie_probleme_actif <- NULL
+}, ignoreInit = TRUE)
+
+observeEvent(input$hygie_probleme, {
+  req(input$hygie_probleme$type)
+
+  nouveau <- list(
+    type = as.character(input$hygie_probleme$type),
+    variable = if (!is.null(input$hygie_probleme$variable)) {
+      as.character(input$hygie_probleme$variable)
+    } else NULL
+  )
+
+  ancien <- rv$hygie_probleme_actif
+
+  if (!is.null(ancien) && identical(ancien, nouveau)) {
+    rv$hygie_probleme_actif <- NULL
+    showNotification("Filtre d'inspection retiré.", type = "message", duration = 2)
+  } else {
+    rv$hygie_probleme_actif <- nouveau
+  }
+}, ignoreInit = TRUE)
+
+observeEvent(input$hygie_boxplot, {
+  variable <- input$hygie_boxplot$variable %||% NULL
+  req(variable)
+
+  df <- hygie_donnees_inspection_base()
+  req(!is.null(df), variable %in% names(df), is.numeric(df[[variable]]))
+
+  rv$hygie_boxplot_variable <- variable
+
+  showModal(modalDialog(
+    title = paste("Valeurs aberrantes —", variable),
+    size = "l",
+    tags$div(
+      class = "h-boxplot-intro",
+      "Les points au-delà des moustaches sont identifiés avec la règle IQR × 1,5. ",
+      "Ils sont potentiellement aberrants : l'utilisateur décide ensuite quoi en faire."
+    ),
+    plotOutput("hygie_boxplot_plot", height = "380px"),
+    footer = tagList(
+      modalButton("Fermer"),
+      tags$button(
+        type = "button",
+        class = "h-btn-ok",
+        onclick = sprintf(
+          "Shiny.setInputValue('hygie_probleme', {type:'outlier', variable:%s}, {priority:'event'}); $(this).closest('.modal').modal('hide');",
+          hygie_json(variable)
+        ),
+        "Voir les lignes concernées"
+      )
+    )
+  ))
+}, ignoreInit = TRUE)
+
+output$hygie_boxplot_plot <- renderPlot({
+  variable <- rv$hygie_boxplot_variable
+  req(variable)
+
+  df <- hygie_donnees_inspection_base()
+  req(!is.null(df), variable %in% names(df))
+
+  x <- df[[variable]]
+  req(is.numeric(x))
+
+  idx <- which(!is.na(x))
+  vals <- x[idx]
+  req(length(vals) >= 5)
+
+  q1 <- as.numeric(quantile(vals, .25, names = FALSE, na.rm = TRUE))
+  q3 <- as.numeric(quantile(vals, .75, names = FALSE, na.rm = TRUE))
+  iqr <- q3 - q1
+  req(is.finite(iqr), iqr > 0)
+
+  bas <- q1 - 1.5 * iqr
+  haut <- q3 + 1.5 * iqr
+  idx_out <- idx[vals < bas | vals > haut]
+
+  boxplot(
+    vals,
+    horizontal = TRUE,
+    outline = FALSE,
+    main = paste("Boxplot —", variable),
+    xlab = variable
+  )
+
+  if (length(idx_out) > 0) {
+    points(df[[variable]][idx_out], rep(1, length(idx_out)), pch = 19, cex = 1.1)
+    text(
+      df[[variable]][idx_out],
+      rep(1, length(idx_out)),
+      labels = paste0("L", idx_out),
+      pos = 3,
+      cex = 0.72
+    )
+  }
+
+  mtext(
+    paste0(length(idx_out), " valeur(s) potentiellement aberrante(s)"),
+    side = 3,
+    line = 0.25,
+    cex = 0.85
+  )
+})
+
+# Le tableau est déjà défini dans server.R. On remplace son renderer
+# après le premier flush afin de conserver l'architecture existante et
+# d'éviter de lire donnees_affichees() avant sa définition.
+session$onFlushed(function() {
+  output$tableau_donnees <- renderReactable({
+    df_base <- hygie_donnees_inspection_base()
+    df <- hygie_donnees_inspection()
+    req(!is.null(df_base), !is.null(df), nrow(df) > 0)
+
+    df_propre <- nettoyer_df_pour_dt(df)
+    problemes <- hygie_analyser_problemes(df_base)
+
+    colonnes <- setNames(
+      lapply(names(df_propre), function(nm) {
+        reactable::colDef(
+          header = function(value, name) {
+            hygie_header(value, name, problemes)
+          },
+          html = TRUE
+        )
+      }),
+      names(df_propre)
+    )
+
+    reactable::reactable(
+      df_propre,
+      columns = colonnes,
+      filterable = TRUE,
+      searchable = TRUE,
+      striped = TRUE,
+      highlight = TRUE,
+      compact = TRUE,
+      bordered = TRUE,
+      resizable = TRUE,
+      defaultPageSize = 25,
+      showPageSizeOptions = TRUE,
+      pageSizeOptions = c(10, 25, 50, 100),
+      language = reactable::reactableLang(
+        searchPlaceholder = "Rechercher...",
+        noData = "Aucune donnée disponible",
+        pageNext = "Suivant",
+        pagePrevious = "Précédent",
+        pageInfo = "{rowStart} à {rowEnd} sur {rows} lignes",
+        pageSizeOptions = "Afficher {rows} lignes"
+      )
+    )
+  })
+}, once = TRUE)
+
 observeEvent(input$qc_analyser, {
   modal_qc_analyser()
 }, ignoreInit = TRUE)
