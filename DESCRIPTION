@@ -35,5 +35,6 @@ Imports:
     rlang (>= 1.1.0),
     glue (>= 1.6.0),
     purrr (>= 1.0.0),
+    ggplot2 (>= 3.5.0),
     tools
 Config/roxygen2/version: 8.1.0
