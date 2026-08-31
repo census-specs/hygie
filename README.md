@@ -49,7 +49,7 @@ Une fois le paquet installé, vous pouvez lancer l'application d'une simple comm
 library(hygie)
 
 # Lancer Hygie
-run_hygie()
+hygie()
 ```
 Options de lancement :
 ```R
