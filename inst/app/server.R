@@ -79,6 +79,7 @@ server <- function(input, output, session) {
   source("modules/mod_transformer.R", local = TRUE)
   source("modules/mod_combiner.R",    local = TRUE)
   source("modules/mod_qualite.R",     local = TRUE)
+  source("modules/mod_boxplot_qualite.R", local = TRUE)
   source("modules/mod_dates.R",       local = TRUE)
   source("modules/mod_export.R",      local = TRUE)
   
@@ -199,9 +200,9 @@ server <- function(input, output, session) {
       language            = reactableLang(
         searchPlaceholder = "Rechercher...",
         noData            = "Aucune donnée disponible",
-        pageNext          = "Suivant",
+        pageNext           = "Suivant",
         pagePrevious      = "Précédent",
-        pageInfo          = "{rowStart} à {rowEnd} sur {rows} lignes",
+        pageInfo           = "{rowStart} à {rowEnd} sur {rows} lignes",
         pageSizeOptions   = "Afficher {rows} lignes"
       )
     )
@@ -284,7 +285,7 @@ server <- function(input, output, session) {
       rv$pipeline <- supprimer_etape(rv$pipeline, id_e)
       showNotification(glue::glue("Etape supprimée : {lib}"), type = "message")
     }
-  }, ignoreInit = TRUE)
+  })
   
   # ── Dispatcher des actions de menu ────────────────────────
   observeEvent(input$menu_action, {
