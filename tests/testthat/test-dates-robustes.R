@@ -7,7 +7,7 @@ test_that("hygie_parse_date_auto reconnaît plusieurs formats dans une même col
     "20240119",
     "20/01/24",
     "2024/01/21 14:35:20",
-    "45293",
+    "45292",
     "valeur_invalide",
     NA_character_
   )
