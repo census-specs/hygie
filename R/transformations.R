@@ -7,6 +7,76 @@
 `%||%` <- function(a, b) if (!is.null(a)) a else b
 
 # ---------------------------------------------------------------------------
+# DATES — conversion robuste multi-format
+# ---------------------------------------------------------------------------
+
+#' Convertir une colonne hétérogène en Date
+#'
+#' Essaie plusieurs formats valeur par valeur. Les formats jour/mois sont
+#' prioritaires pour éviter les interprétations anglo-saxonnes ambiguës.
+#' Les mois français et les sériaux Excel sont également pris en charge.
+#' @export
+hygie_parse_date_auto <- function(x) {
+  x <- trimws(as.character(x))
+  x[x %in% c("", "NA", "N/A", "NULL", "-", ".")] <- NA_character_
+
+  out <- as.Date(rep(NA_character_, length(x)))
+
+  # Sériaux Excel : 45292, par exemple. Les YYYYMMDD à 8 chiffres
+  # ne sont volontairement pas considérés comme des sériaux Excel.
+  num <- suppressWarnings(as.numeric(x))
+  idx <- !is.na(num) & grepl("^[0-9]{5}$", x)
+  out[idx] <- as.Date(num[idx], origin = "1899-12-30")
+
+  z <- tolower(x)
+  z <- chartr("éèêëàâäîïôöùûüçÿ", "eeeeaaaiioouucy", z)
+
+  mois <- c(
+    janvier="01", fevrier="02", mars="03", avril="04", mai="05", juin="06",
+    juillet="07", aout="08", septembre="09", octobre="10", novembre="11", decembre="12"
+  )
+  for (m in names(mois)) {
+    z <- gsub(
+      paste0("([0-9]{1,2})\\s+", m, "\\s+([0-9]{2,4})"),
+      paste0("\\1/", mois[[m]], "/\\2"), z
+    )
+  }
+
+  # Une conversion en Date ne conserve pas l'heure.
+  z <- sub("\\s+[0-9]{1,2}:[0-9]{2}(:[0-9]{2})?.*$", "", z)
+
+  formats <- c(
+    "%Y-%m-%d", "%Y/%m/%d", "%Y.%m.%d",
+    "%d/%m/%Y", "%d-%m-%Y", "%d.%m.%Y",
+    "%m/%d/%Y", "%m-%d-%Y", "%m.%d.%Y",
+    "%Y%m%d", "%d%m%Y",
+    "%d/%m/%y", "%d-%m-%y", "%d.%m.%y"
+  )
+
+  for (f in formats) {
+    miss <- is.na(out) & !is.na(z)
+    if (!any(miss)) break
+    parsed <- suppressWarnings(as.Date(z[miss], format = f))
+    out[which(miss)] <- parsed
+  }
+
+  miss <- is.na(out) & !is.na(x)
+  if (any(miss)) {
+    parsed <- suppressWarnings(as.Date(x[miss], format = "%Y-%m-%d %H:%M:%S"))
+    out[which(miss)] <- parsed
+  }
+
+  out
+}
+
+#' Générer une expression R autonome pour une conversion multi-format
+#' @param col Nom de colonne R déjà valide dans le contexte d'évaluation
+#' @return chaîne contenant une expression R autonome
+hygie_date_auto_formula <- function(col) {
+  sprintf("(function(x) {\n  x <- trimws(as.character(x))\n  x[x %%in%% c(\"\", \"NA\", \"N/A\", \"NULL\", \"-\", \".\")] <- NA_character_\n  out <- as.Date(rep(NA_character_, length(x)))\n  num <- suppressWarnings(as.numeric(x))\n  idx <- !is.na(num) & grepl(\"^[0-9]{5}$\", x)\n  out[idx] <- as.Date(num[idx], origin = \"1899-12-30\")\n  z <- tolower(x)\n  z <- chartr(\"éèêëàâäîïôöùûüçÿ\", \"eeeeaaaiioouucy\", z)\n  mois <- c(janvier=\"01\", fevrier=\"02\", mars=\"03\", avril=\"04\", mai=\"05\", juin=\"06\", juillet=\"07\", aout=\"08\", septembre=\"09\", octobre=\"10\", novembre=\"11\", decembre=\"12\")\n  for (m in names(mois)) z <- gsub(paste0(\"([0-9]{1,2})\\\\s+\", m, \"\\\\s+([0-9]{2,4})\"), paste0(\"\\\\1/\", mois[[m]], \"/\\\\2\"), z)\n  z <- sub(\"\\\\s+[0-9]{1,2}:[0-9]{2}(:[0-9]{2})?.*$\", \"\", z)\n  formats <- c(\"%%Y-%%m-%%d\", \"%%Y/%%m/%%d\", \"%%Y.%%m.%%d\", \"%%d/%%m/%%Y\", \"%%d-%%m-%%Y\", \"%%d.%%m.%%Y\", \"%%m/%%d/%%Y\", \"%%m-%%d-%%Y\", \"%%m.%%d.%%Y\", \"%%Y%%m%%d\", \"%%d%%m%%Y\", \"%%d/%%m/%%y\", \"%%d-%%m-%%y\", \"%%d.%%m.%%y\")\n  for (f in formats) { miss <- is.na(out) & !is.na(z); if (!any(miss)) break; parsed <- suppressWarnings(as.Date(z[miss], format=f)); out[which(miss)] <- parsed }\n  miss <- is.na(out) & !is.na(x)\n  if (any(miss)) out[which(miss)] <- suppressWarnings(as.Date(x[miss], format=\"%%Y-%%m-%%d %%H:%%M:%%S\"))\n  out\n})(%s)", col)
+}
+
+# ---------------------------------------------------------------------------
 # DIAGNOSTIC DES DONNÉES
 # ---------------------------------------------------------------------------
 
@@ -102,7 +172,7 @@ importer_fichier <- function(chemin, options = list()) {
     },
     "sav"      = haven::read_sav(chemin),
     "sas7bdat" = haven::read_sas(chemin),
-    "dta"      = haven::read_dta(chemin),
+    "dta"     = haven::read_dta(chemin),
     "json"     = {
       obj <- jsonlite::fromJSON(chemin, flatten = TRUE)
       if (is.data.frame(obj)) obj else as.data.frame(obj)
@@ -129,10 +199,8 @@ importer_fichier <- function(chemin, options = list()) {
     stop(glue::glue("Format non supporté : .{ext}"))
   )
 
-  # Convertir en data.frame propre
   df <- as.data.frame(df, stringsAsFactors = FALSE)
 
-  # Nettoyer les colonnes de type list (readxl avec valeurs mixtes)
   for (col in names(df)) {
     if (is.list(df[[col]])) {
       df[[col]] <- sapply(df[[col]], function(x) {
@@ -142,7 +210,6 @@ importer_fichier <- function(chemin, options = list()) {
     }
   }
 
-  # Convertir les labels haven (SPSS/Stata) en types R natifs
   for (col in names(df)) {
     if (inherits(df[[col]], "haven_labelled")) {
       df[[col]] <- haven::zap_labels(df[[col]])
@@ -158,8 +225,7 @@ exporter_fichier <- function(donnees, chemin, options = list()) {
   ext <- tolower(tools::file_ext(chemin))
   switch(ext,
     "csv"  = readr::write_delim(donnees, chemin, delim = options$separateur %||% ","),
-    "xlsx" = writexl::write_xlsx(
-               setNames(list(donnees), options$feuille %||% "Données"), chemin),
+    "xlsx" = writexl::write_xlsx(setNames(list(donnees), options$feuille %||% "Données"), chemin),
     "sav"  = haven::write_sav(donnees, chemin),
     "dta"  = haven::write_dta(donnees, chemin),
     "rds"  = saveRDS(donnees, chemin),
@@ -172,11 +238,11 @@ exporter_fichier <- function(donnees, chemin, options = list()) {
 #' Détecter le séparateur probable d'un CSV
 #' @export
 detecter_separateur <- function(chemin) {
-  lignes    <- readLines(chemin, n = 5, warn = FALSE)
-  premiere  <- lignes[1]
+  lignes <- readLines(chemin, n=5, warn=FALSE)
+  premiere <- lignes[1]
   candidats <- c(",", ";", "\t", "|")
-  comptes   <- sapply(candidats, function(s)
-    sum(nchar(premiere) - nchar(gsub(s, "", premiere, fixed = TRUE))))
+  comptes <- sapply(candidats, function(s)
+    sum(nchar(premiere) - nchar(gsub(s, "", premiere, fixed=TRUE))))
   candidats[which.max(comptes)]
 }
 
