@@ -180,6 +180,163 @@ Shiny.addCustomMessageHandler("majMenus", function (data) {
 })();
 
 // ---------------------------------------------------------------------
+// TYPES DES COLONNES — icône + menu de changement rapide
+// ---------------------------------------------------------------------
+(function () {
+  var TYPE_DEFS = {
+    numerique:    { icon: "123", label: "Numérique", cls: "numeric" },
+    texte:        { icon: "Aa",  label: "Texte", cls: "text" },
+    categorielle: { icon: "Ab",  label: "Catégorielle", cls: "factor" },
+    logique:      { icon: "✓",   label: "Logique", cls: "logical" },
+    date:         { icon: "▣",   label: "Date", cls: "date" }
+  };
+
+  var MENU_ID = "hygie-type-menu";
+  var timer = null;
+
+  function injectTypeStyles() {
+    if (document.getElementById("hygie-type-style")) return;
+    var style = document.createElement("style");
+    style.id = "hygie-type-style";
+    style.textContent = `
+      .hygie-type-wrap { display:inline-flex; align-items:center; position:relative; margin-right:5px; }
+      .hygie-type-icon { display:inline-flex; align-items:center; justify-content:center; width:20px; height:20px;
+        border:1px solid #D0D5DD; border-radius:4px; background:#F9FAFB; color:#344054;
+        font:600 9px/1 'Noto Sans',sans-serif; cursor:pointer; vertical-align:middle; }
+      .hygie-type-icon:hover { background:#F2F4F7; border-color:#98A2B3; }
+      .hygie-type-icon.date { font-size:13px; }
+      .hygie-type-menu { position:fixed; z-index:99999; min-width:170px; padding:4px;
+        background:#fff; border:1px solid #D0D5DD; border-radius:5px; box-shadow:0 8px 20px rgba(16,24,40,.14);
+        font-family:'Noto Sans',sans-serif; }
+      .hygie-type-option { width:100%; display:flex; align-items:center; gap:9px; padding:7px 9px;
+        border:0; background:#fff; color:#344054; cursor:pointer; text-align:left; font-size:11.5px; border-radius:3px; }
+      .hygie-type-option:hover { background:#F2F4F7; }
+      .hygie-type-option .mini { width:22px; text-align:center; font-weight:700; }
+    `;
+    document.head.appendChild(style);
+  }
+
+  function normalizeName(s) {
+    return (s || "").replace(/\s+/g, " ").trim();
+  }
+
+  function guessType(values) {
+    var vals = values.map(function (v) { return normalizeName(v); }).filter(function (v) { return v !== ""; });
+    if (!vals.length) return "texte";
+    if (vals.every(function (v) { return /^(TRUE|FALSE|T|F|VRAI|FAUX)$/i.test(v); })) return "logique";
+    if (vals.every(function (v) { return /^[-+]?\d+(?:[.,]\d+)?$/.test(v.replace(/\s/g, "")); })) return "numerique";
+    if (vals.every(function (v) { return /^(?:\d{4}[-/.]\d{1,2}[-/.]\d{1,2}|\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4})/.test(v); })) return "date";
+    var uniques = [];
+    vals.forEach(function(v){ if (uniques.indexOf(v) === -1) uniques.push(v); });
+    return uniques.length <= Math.min(20, Math.max(5, vals.length * 0.2)) ? "categorielle" : "texte";
+  }
+
+  function getColumnCells(th) {
+    var table = th.closest(".rt-table") || th.closest("table") || document;
+    var idx = Array.prototype.indexOf.call(th.parentNode.children, th);
+    var cells = table.querySelectorAll(".rt-tbody .rt-td");
+    var values = [];
+    Array.prototype.forEach.call(cells, function(cell, i) {
+      var cellIdx = Array.prototype.indexOf.call(cell.parentNode.children, cell);
+      if (cellIdx === idx && values.length < 30) values.push(cell.textContent || "");
+    });
+    return values;
+  }
+
+  function closeMenu() {
+    var m = document.getElementById(MENU_ID);
+    if (m) m.remove();
+  }
+
+  function applyType(col, type) {
+    closeMenu();
+    // Réutilise le mécanisme de type déjà présent dans Hygie :
+    // aucune nouvelle logique de conversion n'est dupliquée côté JS.
+    Shiny.setInputValue("type_col", col, {priority:"event"});
+    Shiny.setInputValue("type_nouveau", type, {priority:"event"});
+    Shiny.setInputValue("type_fmt", "%Y-%m-%d", {priority:"event"});
+    // Le serveur écoute déjà type_ok. Le court délai laisse à Shiny le
+    // temps d'enregistrer type_col/type_nouveau avant de déclencher l'étape.
+    window.setTimeout(function () {
+      Shiny.setInputValue("type_ok", Date.now() + Math.random(), {priority:"event"});
+    }, 40);
+  }
+
+  function openMenu(icon, col, current) {
+    closeMenu();
+    var menu = document.createElement("div");
+    menu.id = MENU_ID;
+    menu.className = "hygie-type-menu";
+    var rect = icon.getBoundingClientRect();
+    menu.style.left = Math.max(5, Math.min(window.innerWidth - 180, rect.left)) + "px";
+    menu.style.top = Math.min(window.innerHeight - 10, rect.bottom + 4) + "px";
+
+    Object.keys(TYPE_DEFS).forEach(function(type) {
+      var def = TYPE_DEFS[type];
+      var option = document.createElement("button");
+      option.type = "button";
+      option.className = "hygie-type-option";
+      option.innerHTML = '<span class="mini">' + def.icon + '</span><span>' + def.label + '</span>';
+      if (type === current) option.style.fontWeight = "700";
+      option.addEventListener("click", function(e) {
+        e.stopPropagation();
+        applyType(col, type);
+      });
+      menu.appendChild(option);
+    });
+    document.body.appendChild(menu);
+  }
+
+  function enhanceHeaders() {
+    injectTypeStyles();
+    var headers = document.querySelectorAll(".rt-thead .rt-th");
+    if (!headers.length) return;
+
+    Array.prototype.forEach.call(headers, function(th) {
+      if (th.querySelector(".hygie-type-icon")) return;
+      var rawName = th.getAttribute("data-column-id") || "";
+      var labelNode = th.querySelector(".rt-th-content") || th;
+      var col = normalizeName(rawName || labelNode.textContent);
+      if (!col || col === "" || col.toLowerCase() === "group") return;
+
+      var current = guessType(getColumnCells(th));
+      var wrap = document.createElement("span");
+      wrap.className = "hygie-type-wrap";
+      var icon = document.createElement("button");
+      icon.type = "button";
+      icon.className = "hygie-type-icon " + TYPE_DEFS[current].cls;
+      icon.title = "Type : " + TYPE_DEFS[current].label + " — cliquer pour modifier";
+      icon.textContent = TYPE_DEFS[current].icon;
+      icon.addEventListener("click", function(e) {
+        e.preventDefault();
+        e.stopPropagation();
+        openMenu(icon, col, current);
+      });
+      wrap.appendChild(icon);
+      labelNode.insertBefore(wrap, labelNode.firstChild);
+    });
+  }
+
+  function schedule() {
+    window.clearTimeout(timer);
+    timer = window.setTimeout(enhanceHeaders, 150);
+  }
+
+  document.addEventListener("DOMContentLoaded", function() {
+    var root = document.querySelector(".h-app") || document.body;
+    var observer = new MutationObserver(schedule);
+    observer.observe(root, {childList:true, subtree:true});
+    schedule();
+  });
+
+  document.addEventListener("click", function(e) {
+    if (!e.target.closest(".hygie-type-icon") && !e.target.closest("#" + MENU_ID)) closeMenu();
+  });
+
+  window.addEventListener("scroll", closeMenu, true);
+})();
+
+// ---------------------------------------------------------------------
 // IMPORTANT : le rendu/masquage des tableaux DT est volontairement
 // absent de ce fichier. Shiny crée maintenant les DT uniquement quand
 // les données existent. Cela évite d'initialiser DataTables dans un
