@@ -68,9 +68,6 @@ Shiny.addCustomMessageHandler("majMenus", function (data) {
 });
 
 // ── Résumé qualité : construit à partir des badges réellement rendus ──
-// Les badges manquants/outliers représentent des cellules/valeurs par
-// variable. Pour les doublons, la même quantité est répétée dans chaque
-// colonne : on prend donc le maximum plutôt que de sommer.
 (function () {
   var observer = null;
 
@@ -176,6 +173,223 @@ Shiny.addCustomMessageHandler("majMenus", function (data) {
     observer = new MutationObserver(schedule);
     observer.observe(root, { childList:true, subtree:true });
     schedule();
+  });
+})();
+
+// ── Types de variables dans les en-têtes Reactable ────────────────
+// Chaque colonne reçoit une petite icône correspondant au type R.
+// Un clic sur l'icône ouvre un menu permettant de changer directement
+// le type. Le changement réutilise les événements Shiny déjà présents
+// dans le module "Corriger le type d'une variable".
+(function () {
+  var TYPE_INFO = {
+    numeric:    { icon: "fa-hashtag", label: "Numérique", value: "numerique" },
+    integer:    { icon: "fa-hashtag", label: "Numérique entier", value: "numerique" },
+    character:  { icon: "fa-font", label: "Texte", value: "texte" },
+    factor:     { icon: "fa-tags", label: "Catégorielle", value: "categorielle" },
+    ordered:    { icon: "fa-list-ol", label: "Catégorielle ordonnée", value: "categorielle" },
+    logical:    { icon: "fa-toggle-on", label: "Logique", value: "logique" },
+    Date:       { icon: "fa-calendar-alt", label: "Date", value: "date" },
+    POSIXct:    { icon: "fa-clock", label: "Date-heure", value: "date" },
+    POSIXlt:    { icon: "fa-clock", label: "Date-heure", value: "date" },
+    default:    { icon: "fa-question", label: "Autre type", value: "texte" }
+  };
+
+  var TYPE_CHOICES = [
+    { value: "numerique",    icon: "fa-hashtag",      label: "Numérique" },
+    { value: "texte",        icon: "fa-font",         label: "Texte" },
+    { value: "categorielle", icon: "fa-tags",         label: "Catégorielle" },
+    { value: "logique",      icon: "fa-toggle-on",    label: "Logique" },
+    { value: "date",         icon: "fa-calendar-alt", label: "Date" }
+  ];
+
+  function getTableMetadata() {
+    var scripts = Array.prototype.slice.call(
+      document.querySelectorAll('script[type="application/json"][data-for]')
+    );
+    for (var i = 0; i < scripts.length; i++) {
+      try {
+        var parsed = JSON.parse(scripts[i].textContent || "{}");
+        var root = parsed && parsed[Object.keys(parsed)[0]];
+        var data = root && root.tag && root.tag.attribs && root.tag.attribs.data;
+        if (data && Array.isArray(data.columns)) return data.columns;
+      } catch (err) {}
+    }
+    return [];
+  }
+
+  function infoFor(type) {
+    if (!type) return TYPE_INFO.default;
+    if (TYPE_INFO[type]) return TYPE_INFO[type];
+    if (type.indexOf("POSIX") === 0) return TYPE_INFO.POSIXct;
+    return TYPE_INFO.default;
+  }
+
+  function closeAllTypeMenus(except) {
+    document.querySelectorAll(".h-type-menu-ouvert").forEach(function (el) {
+      if (el !== except) el.classList.remove("h-type-menu-ouvert");
+    });
+  }
+
+  function changeType(colName, typeValue) {
+    // Date : passer par le convertisseur automatique multi-format de Hygie.
+    // Cela évite de retomber sur un unique format %Y-%m-%d.
+    if (typeValue === "date") {
+      Shiny.setInputValue("cd_col", colName, { priority: "event" });
+      Shiny.setInputValue("cd_fmt", "__auto__", { priority: "event" });
+      window.setTimeout(function () {
+        Shiny.setInputValue("cd_ok", Date.now() + Math.random(), { priority: "event" });
+      }, 30);
+      return;
+    }
+
+    Shiny.setInputValue("type_col", colName, { priority: "event" });
+    Shiny.setInputValue("type_nouveau", typeValue, { priority: "event" });
+    window.setTimeout(function () {
+      Shiny.setInputValue("type_ok", Date.now() + Math.random(), { priority: "event" });
+    }, 30);
+  }
+
+  function buildMenu(colName, currentType) {
+    var info = infoFor(currentType);
+    var wrapper = document.createElement("span");
+    wrapper.className = "h-type-control";
+    wrapper.title = "Type : " + info.label + " — cliquer pour modifier";
+
+    var button = document.createElement("button");
+    button.type = "button";
+    button.className = "h-type-icon";
+    button.setAttribute("aria-label", "Modifier le type de " + colName);
+    button.innerHTML = '<i class="fas ' + info.icon + '" aria-hidden="true"></i>';
+
+    var menu = document.createElement("span");
+    menu.className = "h-type-menu";
+    menu.setAttribute("role", "menu");
+
+    TYPE_CHOICES.forEach(function (choice) {
+      var item = document.createElement("button");
+      item.type = "button";
+      item.className = "h-type-menu-item";
+      item.setAttribute("role", "menuitem");
+      item.innerHTML = '<i class="fas ' + choice.icon + '" aria-hidden="true"></i><span>' + choice.label + '</span>';
+      item.addEventListener("click", function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        closeAllTypeMenus();
+        changeType(colName, choice.value);
+      });
+      menu.appendChild(item);
+    });
+
+    button.addEventListener("click", function (e) {
+      e.preventDefault();
+      e.stopPropagation();
+      var wasOpen = wrapper.classList.contains("h-type-menu-ouvert");
+      closeAllTypeMenus(wrapper);
+      wrapper.classList.toggle("h-type-menu-ouvert", !wasOpen);
+    });
+
+    wrapper.appendChild(button);
+    wrapper.appendChild(menu);
+    return wrapper;
+  }
+
+  function decorateHeaders() {
+    var headers = document.querySelectorAll(".Reactable .rt-thead .rt-th");
+    if (!headers.length) return;
+
+    var columns = getTableMetadata().filter(function (c) {
+      return c && c.id !== ".details" && c.show !== false;
+    });
+    if (!columns.length) return;
+
+    headers.forEach(function (header, index) {
+      if (header.querySelector(".h-type-control")) return;
+      var col = columns[index];
+      if (!col || !col.id) return;
+
+      var text = header.querySelector(".rt-text-content");
+      if (!text) return;
+
+      var name = text.textContent || col.name || col.id;
+      var info = infoFor(col.type);
+      var control = buildMenu(col.id, col.type);
+
+      var container = document.createElement("span");
+      container.className = "h-type-header-content";
+      container.appendChild(control);
+      var label = document.createElement("span");
+      label.className = "h-type-column-name";
+      label.textContent = name;
+      container.appendChild(label);
+      text.textContent = "";
+      text.appendChild(container);
+    });
+  }
+
+  function injectTypeStyles() {
+    if (document.getElementById("hygie-type-control-style")) return;
+    var style = document.createElement("style");
+    style.id = "hygie-type-control-style";
+    style.textContent = `
+      .h-type-header-content {
+        display:inline-flex; align-items:center; gap:6px;
+        max-width:100%; vertical-align:middle;
+      }
+      .h-type-column-name {
+        overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+        vertical-align:middle;
+      }
+      .h-type-control { position:relative; display:inline-flex; flex:0 0 auto; }
+      .h-type-icon {
+        width:20px; height:20px; padding:0; margin:0;
+        border:1px solid transparent; border-radius:3px;
+        background:transparent; color:#667085; cursor:pointer;
+        display:inline-flex; align-items:center; justify-content:center;
+        font-size:11px; line-height:1;
+      }
+      .h-type-icon:hover, .h-type-menu-ouvert .h-type-icon {
+        background:#EBF2FF; border-color:#B3CFFB; color:#1A56C4;
+      }
+      .h-type-menu {
+        display:none; position:absolute; z-index:10000;
+        top:24px; left:0; min-width:165px; padding:4px;
+        background:#fff; border:1px solid #CDD2DB; border-radius:4px;
+        box-shadow:0 5px 16px rgba(16,24,40,.16);
+      }
+      .h-type-menu-ouvert .h-type-menu { display:block; }
+      .h-type-menu-item {
+        width:100%; border:0; background:transparent; padding:6px 8px;
+        display:flex; align-items:center; gap:8px; text-align:left;
+        font:11.5px 'Noto Sans',sans-serif; color:#344054; cursor:pointer;
+        border-radius:3px;
+      }
+      .h-type-menu-item:hover { background:#F2F4F7; color:#1A56C4; }
+      .h-type-menu-item i { width:15px; text-align:center; color:#667085; }
+      .h-type-menu-item:hover i { color:#1A56C4; }
+      .rt-th { overflow:visible !important; }
+      .rt-th-inner, .rt-sort-header, .rt-text-content { overflow:visible !important; }
+    `;
+    document.head.appendChild(style);
+  }
+
+  function schedule() {
+    window.clearTimeout(window.__hygieTypeControlTimer);
+    window.__hygieTypeControlTimer = window.setTimeout(function () {
+      injectTypeStyles();
+      decorateHeaders();
+    }, 120);
+  }
+
+  document.addEventListener("DOMContentLoaded", function () {
+    var root = document.querySelector(".h-app") || document.body;
+    var observer = new MutationObserver(schedule);
+    observer.observe(root, { childList:true, subtree:true });
+    schedule();
+
+    document.addEventListener("click", function (e) {
+      if (!e.target.closest(".h-type-control")) closeAllTypeMenus();
+    });
   });
 })();
 
